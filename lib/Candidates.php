@@ -1003,6 +1003,38 @@ class Candidates
 
         return $this->_db->getAllAssoc($sql);
     }
+    
+    public function getPossibleDropDownOptions($table, $valueColumn, $labelColumn, $shortColumn = null, $orderBy = null, $where = null)
+    {
+        $shortSelect = $shortColumn ? ", $table.$shortColumn AS shortName" : ", $table.$labelColumn AS shortName";
+        if ($orderBy === false) {
+            $orderByClause = '';
+        } elseif ($orderBy !== null && (strpos($orderBy, ' ') !== false || strpos($orderBy, ',') !== false)) {
+            $orderByClause = "ORDER BY $orderBy";
+        } else {
+            $col = $orderBy ? $orderBy : $labelColumn;
+            $orderByClause = "ORDER BY $table.$col ASC";
+        }
+        $whereClause = $where ? "WHERE $where" : '';
+        $sql = sprintf(
+            "SELECT
+                %s.%s AS optionValue,
+                %s.%s AS optionLabel
+                %s
+            FROM
+                %s
+            %s
+            %s",
+            $table, $valueColumn,
+            $table, $labelColumn,
+            $shortSelect,
+            $table,
+            $whereClause,
+            $orderByClause
+        );
+        return $this->_db->getAllAssoc($sql);
+    }
+
 
     /**
      * Updates a sites possible sources with an array generated
@@ -2082,7 +2114,7 @@ class CandidatesDataGrid extends DataGrid
                                      'sortableColumn'    => 'source',
                                      'pagerWidth'   => 140,
                                      'alphaNavigation' => true,
-                                     'filter'         => 'candidate.source'),
+                                     'filter'         => '=in=='),
 
             'Available' =>     array('select'   => 'DATE_FORMAT(candidate.date_available, \'%m-%d-%y\') AS dateAvailable',
                                      'sortableColumn'     => 'dateAvailable',
@@ -2203,7 +2235,8 @@ class CandidatesDataGrid extends DataGrid
 
             if (!isset($this->_classColumns[$fieldName]))
             {
-                $columnDefinition = $candidates->extraFields->getDataGridDefinition($index, $data, $this->_db);
+                 $pipelineJobOrderID = isset($this->_pipelineJobOrderID) ? $this->_pipelineJobOrderID : null;
+                $columnDefinition = $candidates->extraFields->getDataGridDefinition($index, $data, $this->_db, $pipelineJobOrderID);
 
                 /* Return false for extra fields that should not be columns. */
                 if ($columnDefinition !== false)

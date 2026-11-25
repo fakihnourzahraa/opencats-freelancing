@@ -1,0 +1,1062 @@
+<?php
+/*
+ * Added for IBC
+ * Evaluations.php
+ */
+
+include_once(LEGACY_ROOT . '/lib/DatabaseConnection.php');
+include_once(LEGACY_ROOT . '/lib/EvaluationScore.php');
+
+class Evaluations
+{
+    public static $DATA_TYPES = array('text', 'date', 'number', 'score');
+    const DEFAULT_MAX_RANGE = 5;
+
+    private $_db;
+
+    public function __construct()
+    {
+        $this->_db = DatabaseConnection::getInstance();
+    }
+
+    private static function _deriveGradeable($dataType)
+    {
+        return ($dataType === 'score') ? 1 : 0;
+    }
+
+    public function getInstance($instanceID)
+    {
+        $rs = $this->_db->getAssoc(sprintf(
+        "SELECT instance_id, candidate_id, title, date_created, date_modified,
+                last_seed_job_order_id
+         FROM evaluation_instance
+         WHERE instance_id = %s",
+            (int) $instanceID
+        ));
+        return (!empty($rs) ? $rs : false);
+    }
+
+    public function getInstancesForCandidate($candidateID)
+    {
+        return $this->_db->getAllAssoc(sprintf(
+        "SELECT ei.instance_id, ei.title, ei.date_created, ei.date_modified,
+                ei.is_locked, ei.final_opinion,
+                (SELECT COUNT(*) FROM evaluation_instance_stage eis
+                WHERE eis.instance_id = ei.instance_id) AS stage_count
+        FROM evaluation_instance ei
+        WHERE ei.candidate_id = %s
+        ORDER BY ei.instance_id DESC",
+            (int) $candidateID
+        ));
+    }
+
+    public function getInstancesForCandidateScored($candidateID)
+    {
+        $rows = $this->getInstancesForCandidate($candidateID);
+
+        foreach ($rows as $index => $row)
+        {
+            $scoring = $this->getScore((int) $row['instance_id']);
+
+            $rows[$index]['score']        = $scoring['score'];
+            $rows[$index]['scoreDisplay'] = EvaluationScore::format($scoring['score']);
+            $rows[$index]['scorePercent'] = EvaluationScore::formatPercent($scoring['score']);
+        }
+
+        return $rows;
+    }
+
+    /* Full scoring result for one evaluation. */
+    public function getScore($instanceID)
+    {
+        return EvaluationScore::scoreEvaluation($this->getFullEvaluation($instanceID));
+    }
+
+    public function createInstance($candidateID, $title = 'Evaluation')
+    {
+        $this->_db->query(sprintf(
+            "INSERT INTO evaluation_instance
+                (candidate_id, title, date_created, date_modified)
+             VALUES (%s, '%s', NOW(), NOW())",
+            (int) $candidateID,
+            $this->_db->escapeString($title)
+        ));
+        return ($this->_db->getLastInsertID());
+    }
+
+    public function renameInstance($instanceID, $title)
+    {
+        $this->_db->query(sprintf(
+            "UPDATE evaluation_instance SET title = '%s', date_modified = NOW()
+             WHERE instance_id = %s",
+            $this->_db->escapeString($title),
+            (int) $instanceID
+        ));
+    }
+
+    public function setFinalOpinion($instanceID, $finalOpinion)
+    {
+        $this->_db->query(sprintf(
+            "UPDATE evaluation_instance
+                SET final_opinion = '%s', date_modified = NOW()
+            WHERE instance_id = %s",
+            $this->_db->escapeString($finalOpinion),
+            (int) $instanceID
+        ));
+    }
+
+    public function touchInstance($instanceID)
+    {
+        $this->_db->query(sprintf(
+            "UPDATE evaluation_instance SET date_modified = NOW()
+             WHERE instance_id = %s",
+            (int) $instanceID
+        ));
+    }
+
+    /* Which job order this evaluation is filed under.
+       NULL = unfiled (never seeded, unreachable from the nav dropdowns)
+       0    = Generic
+       >0   = that job order */
+    public function setJobOrderID($instanceID, $jobOrderID)
+    {
+        $this->_db->query(sprintf(
+            "UPDATE evaluation_instance SET last_seed_job_order_id = %s
+             WHERE instance_id = %s",
+            ($jobOrderID === null ? 'NULL' : (int) $jobOrderID),
+            (int) $instanceID
+        ));
+    }
+
+    /* $jobOrderID 0 means "any evaluation, however it was filed", the Generic
+       view. Anything higher restricts to that job order's filing. */
+    public function getLatestInstanceIDFor($candidateID, $jobOrderID)
+    {
+        $filter = ((int) $jobOrderID > 0)
+            ? sprintf('AND last_seed_job_order_id = %s', (int) $jobOrderID)
+            : '';
+
+        $rs = $this->_db->getAssoc(sprintf(
+            "SELECT instance_id FROM evaluation_instance
+             WHERE candidate_id = %s %s
+             ORDER BY instance_id DESC LIMIT 1",
+            (int) $candidateID,
+            $filter
+        ));
+        return (!empty($rs) ? (int) $rs['instance_id'] : false);
+    }
+
+
+    public function getCandidatesWithEvaluations($jobOrderID)
+    {
+        $filter = ((int) $jobOrderID > 0)
+            ? sprintf('AND last_seed_job_order_id = %s', (int) $jobOrderID)
+            : '';
+
+        $rows = $this->_db->getAllAssoc(sprintf(
+            "SELECT DISTINCT candidate_id FROM evaluation_instance
+             WHERE 1 = 1 %s",
+            $filter
+        ));
+
+        $map = array();
+        foreach ($rows as $row)
+        {
+            $map[(int) $row['candidate_id']] = true;
+        }
+        return $map;
+    }
+
+    public function getCandidatesFiledUnder($jobOrderID)
+    {
+        return $this->getCandidatesWithEvaluations($jobOrderID);
+    }
+
+    public function isLocked($instanceID)
+    {
+        $rs = $this->_db->getAssoc(sprintf(
+            "SELECT is_locked FROM evaluation_instance
+             WHERE instance_id = %s",
+            (int) $instanceID
+        ));
+        return (!empty($rs) && (int) $rs['is_locked'] === 1);
+    }
+
+    public function setLocked($instanceID, $lockState, $userID)
+    {
+        $this->_db->query(sprintf(
+            "UPDATE evaluation_instance
+                SET is_locked = %s, locked_by = %s, locked_date = %s
+              WHERE instance_id = %s",
+            ($lockState ? 1 : 0),
+            ($lockState ? (int) $userID : 'NULL'),
+            ($lockState ? 'NOW()' : 'NULL'),
+            (int) $instanceID
+        ));
+    }
+
+
+    public function deleteInstance($instanceID)
+    {
+        $stages = $this->getStages($instanceID);
+        foreach ($stages as $stage)
+        {
+            $this->deleteStage($stage['instance_stage_id']);
+        }
+
+        $this->_db->query(sprintf(
+            "DELETE FROM evaluation_instance
+             WHERE instance_id = %s",
+            (int) $instanceID
+        ));
+    }
+
+
+
+    public function getStages($instanceID)
+    {
+        return $this->_db->getAllAssoc(sprintf(
+            "SELECT instance_stage_id, stage_name, position, weight
+             FROM evaluation_instance_stage
+             WHERE instance_id = %s
+             ORDER BY position ASC, instance_stage_id ASC",
+            (int) $instanceID
+        ));
+    }
+
+    public function getStage($instanceStageID)
+    {
+        $rs = $this->_db->getAssoc(sprintf(
+            "SELECT instance_stage_id, instance_id, stage_name, position, weight
+             FROM evaluation_instance_stage
+             WHERE instance_stage_id = %s",
+            (int) $instanceStageID
+        ));
+        return (!empty($rs) ? $rs : false);
+    }
+
+    public function addStage($instanceID, $stageName, $position = null, $weight = 100)
+    {
+        if ($position === null)
+        {
+            $position = $this->getNextStagePosition($instanceID);
+        }
+
+        $this->_db->query(sprintf(
+            "INSERT INTO evaluation_instance_stage
+                (instance_id, stage_name, position, weight)
+             VALUES (%s, '%s', %s, %s)",
+            (int) $instanceID,
+            $this->_db->escapeString($stageName),
+            (int) $position,
+            $this->_sanitizeWeight($weight)
+        ));
+        $instanceStageID = $this->_db->getLastInsertID();
+
+        $this->addCriteria($instanceStageID, 'Rating',   'score', 0,  100, 1, self::DEFAULT_MAX_RANGE);
+        $this->addCriteria($instanceStageID, 'Comments', 'text',  99, 0,   0, self::DEFAULT_MAX_RANGE);
+
+        return ($instanceStageID);
+    }
+
+    public function renameStage($instanceStageID, $newName)
+    {
+        $this->_db->query(sprintf(
+            "UPDATE evaluation_instance_stage SET stage_name = '%s'
+             WHERE instance_stage_id = %s",
+            $this->_db->escapeString($newName),
+            (int) $instanceStageID
+        ));
+    }
+
+    public function setStageWeight($instanceStageID, $weight)
+    {
+        $this->_db->query(sprintf(
+            "UPDATE evaluation_instance_stage SET weight = %s
+             WHERE instance_stage_id = %s",
+            $this->_sanitizeWeight($weight),
+            (int) $instanceStageID
+        ));
+    }
+
+    public function deleteStage($instanceStageID)
+    {
+        $this->_db->query(sprintf(
+            "DELETE FROM evaluation_criteria_value
+             WHERE evaluator_id IN (
+                SELECT evaluator_id FROM (
+                    SELECT evaluator_id FROM evaluation_stage_evaluator
+                    WHERE instance_stage_id = %s
+                ) AS t
+             )",
+            (int) $instanceStageID
+        ));
+
+        $this->_db->query(sprintf(
+            "DELETE FROM evaluation_stage_evaluator
+             WHERE instance_stage_id = %s",
+            (int) $instanceStageID
+        ));
+
+        $this->_db->query(sprintf(
+            "DELETE FROM evaluation_instance_criteria
+             WHERE instance_stage_id = %s",
+            (int) $instanceStageID
+        ));
+
+        $this->_db->query(sprintf(
+            "DELETE FROM evaluation_instance_stage
+             WHERE instance_stage_id = %s",
+            (int) $instanceStageID
+        ));
+    }
+
+    public function getNextStagePosition($instanceID)
+    {
+        $rs = $this->_db->getAssoc(sprintf(
+            "SELECT MAX(position) AS max_pos FROM evaluation_instance_stage
+             WHERE instance_id = %s",
+            (int) $instanceID
+        ));
+        return (($rs && $rs['max_pos'] !== null) ? (int) $rs['max_pos'] + 1 : 0);
+    }
+
+    public function moveStage($instanceID, $instanceStageID, $direction)
+    {
+        $stages = $this->getStages($instanceID);
+
+        $idx = -1;
+        foreach ($stages as $i => $s)
+        {
+            if ((int) $s['instance_stage_id'] === (int) $instanceStageID)
+            {
+                $idx = $i;
+                break;
+            }
+        }
+        if ($idx === -1) return;
+
+        $swapIdx = ($direction === 'up') ? $idx - 1 : $idx + 1;
+        if ($swapIdx < 0 || $swapIdx >= count($stages)) return;
+
+        $posA = $stages[$idx]['position'];
+        $posB = $stages[$swapIdx]['position'];
+
+        if ((int) $posA === (int) $posB)
+        {
+            $posB = ($direction === 'up') ? $posA - 1 : $posA + 1;
+        }
+
+        $this->_db->query(sprintf(
+            "UPDATE evaluation_instance_stage SET position = %s
+             WHERE instance_stage_id = %s",
+            (int) $posB, (int) $stages[$idx]['instance_stage_id']
+        ));
+        $this->_db->query(sprintf(
+            "UPDATE evaluation_instance_stage SET position = %s
+             WHERE instance_stage_id = %s",
+            (int) $posA, (int) $stages[$swapIdx]['instance_stage_id']
+        ));
+    }
+
+
+    public function getCriteria($instanceStageID)
+    {
+        return $this->_db->getAllAssoc(sprintf(
+            "SELECT instance_criteria_id, criteria_name, data_type, is_gradeable,
+                    position, weight, max_range
+             FROM evaluation_instance_criteria
+             WHERE instance_stage_id = %s
+             ORDER BY position ASC, instance_criteria_id ASC",
+            (int) $instanceStageID
+        ));
+    }
+
+    public function addCriteria($instanceStageID, $criteriaName, $dataType = 'text',
+                                $position = null, $weight = 0, $isGradeable = 0,
+                                $maxRange = self::DEFAULT_MAX_RANGE)
+    {
+        if (!in_array($dataType, self::$DATA_TYPES))
+        {
+            $dataType = 'text';
+        }
+
+        if ($position === null)
+        {
+            $position = $this->getNextCriteriaPosition($instanceStageID);
+        }
+
+        $this->_db->query(sprintf(
+            "INSERT INTO evaluation_instance_criteria
+                (instance_stage_id, criteria_name, data_type, is_gradeable,
+                 position, weight, max_range)
+             VALUES (%s, '%s', '%s', %s, %s, %s, %s)",
+            (int) $instanceStageID,
+            $this->_db->escapeString($criteriaName),
+            $this->_db->escapeString($dataType),
+            self::_deriveGradeable($dataType),
+            (int) $position,
+            $this->_sanitizeWeight($weight),
+            $this->_sanitizeMaxRange($maxRange)
+        ));
+        return ($this->_db->getLastInsertID());
+    }
+
+    public function renameCriteria($instanceCriteriaID, $newName)
+    {
+        $this->_db->query(sprintf(
+            "UPDATE evaluation_instance_criteria SET criteria_name = '%s'
+             WHERE instance_criteria_id = %s",
+            $this->_db->escapeString($newName),
+            (int) $instanceCriteriaID
+        ));
+    }
+
+    public function changeCriteriaType($instanceCriteriaID, $dataType)
+    {
+        if (!in_array($dataType, self::$DATA_TYPES))
+        {
+            return;
+        }
+
+        $this->_db->query(sprintf(
+            "UPDATE evaluation_instance_criteria
+                SET data_type = '%s', is_gradeable = %s
+             WHERE instance_criteria_id = %s",
+            $this->_db->escapeString($dataType),
+            self::_deriveGradeable($dataType),
+            (int) $instanceCriteriaID
+        ));
+    }
+
+    public function setCriteriaWeight($instanceCriteriaID, $weight)
+    {
+        $this->_db->query(sprintf(
+            "UPDATE evaluation_instance_criteria SET weight = %s
+             WHERE instance_criteria_id = %s",
+            $this->_sanitizeWeight($weight),
+            (int) $instanceCriteriaID
+        ));
+    }
+
+    public function setCriteriaMaxRange($instanceCriteriaID, $maxRange)
+    {
+        $this->_db->query(sprintf(
+            "UPDATE evaluation_instance_criteria SET max_range = %s
+             WHERE instance_criteria_id = %s",
+            $this->_sanitizeMaxRange($maxRange),
+            (int) $instanceCriteriaID
+        ));
+    }
+
+    // Deleting a criterion also discards every answer/grade already given for it.
+    public function deleteCriteria($instanceCriteriaID)
+    {
+        $this->_db->query(sprintf(
+            "DELETE FROM evaluation_criteria_value
+             WHERE instance_criteria_id = %s",
+            (int) $instanceCriteriaID
+        ));
+
+        $this->_db->query(sprintf(
+            "DELETE FROM evaluation_instance_criteria
+             WHERE instance_criteria_id = %s",
+            (int) $instanceCriteriaID
+        ));
+    }
+
+    // Comments is excluded so new criteria land before it, not after.
+    public function getNextCriteriaPosition($instanceStageID)
+    {
+        $rs = $this->_db->getAssoc(sprintf(
+            "SELECT MAX(position) AS max_pos FROM evaluation_instance_criteria
+             WHERE instance_stage_id = %s
+               AND criteria_name != 'Comments'",
+            (int) $instanceStageID
+        ));
+        return (($rs && $rs['max_pos'] !== null) ? (int) $rs['max_pos'] + 1 : 0);
+    }
+
+    public function moveCriteria($instanceStageID, $instanceCriteriaID, $direction)
+    {
+        $criteria = $this->getCriteria($instanceStageID);
+
+        $idx = -1;
+        foreach ($criteria as $i => $c)
+        {
+            if ((int) $c['instance_criteria_id'] === (int) $instanceCriteriaID)
+            {
+                $idx = $i;
+                break;
+            }
+        }
+        if ($idx === -1) return;
+
+        $swapIdx = ($direction === 'up') ? $idx - 1 : $idx + 1;
+        if ($swapIdx < 0 || $swapIdx >= count($criteria)) return;
+
+        $posA = $criteria[$idx]['position'];
+        $posB = $criteria[$swapIdx]['position'];
+
+        if ((int) $posA === (int) $posB)
+        {
+            $posB = ($direction === 'up') ? $posA - 1 : $posA + 1;
+        }
+
+        $this->_db->query(sprintf(
+            "UPDATE evaluation_instance_criteria SET position = %s
+             WHERE instance_criteria_id = %s",
+            (int) $posB, (int) $criteria[$idx]['instance_criteria_id']
+        ));
+        $this->_db->query(sprintf(
+            "UPDATE evaluation_instance_criteria SET position = %s
+             WHERE instance_criteria_id = %s",
+            (int) $posA, (int) $criteria[$swapIdx]['instance_criteria_id']
+        ));
+    }
+
+    public function getEvaluatorsForStage($instanceStageID)
+    {
+        return $this->_db->getAllAssoc(sprintf(
+            "SELECT evaluator_id, evaluator_name
+             FROM evaluation_stage_evaluator
+             WHERE instance_stage_id = %s
+             ORDER BY evaluator_id ASC",
+            (int) $instanceStageID
+        ));
+    }
+
+    public function addEvaluator($instanceStageID, $evaluatorName)
+    {
+        $this->_db->query(sprintf(
+            "INSERT INTO evaluation_stage_evaluator
+                (instance_stage_id, evaluator_name)
+             VALUES (%s, '%s')",
+            (int) $instanceStageID,
+            $this->_db->escapeString($evaluatorName)
+        ));
+        return ($this->_db->getLastInsertID());
+    }
+
+    public function renameEvaluator($evaluatorID, $newName)
+    {
+        $this->_db->query(sprintf(
+            "UPDATE evaluation_stage_evaluator SET evaluator_name = '%s'
+             WHERE evaluator_id = %s",
+            $this->_db->escapeString($newName),
+            (int) $evaluatorID
+        ));
+    }
+
+    public function deleteEvaluator($evaluatorID)
+    {
+        $this->_db->query(sprintf(
+            "DELETE FROM evaluation_criteria_value
+             WHERE evaluator_id = %s",
+            (int) $evaluatorID
+        ));
+
+        $this->_db->query(sprintf(
+            "DELETE FROM evaluation_stage_evaluator
+             WHERE evaluator_id = %s",
+            (int) $evaluatorID
+        ));
+    }
+
+    // Feeds the autocomplete datalist on the evaluate page.
+    public function getAllEvaluatorNames()
+    {
+        $rows = $this->_db->getAllAssoc(sprintf(
+            "SELECT DISTINCT evaluator_name
+             FROM evaluation_stage_evaluator
+             WHERE evaluator_name != ''
+             ORDER BY evaluator_name ASC"
+        ));
+
+        return array_map(function ($row) { return $row['evaluator_name']; }, $rows);
+    }
+
+
+    public function getInstanceIDForEvaluator($evaluatorID)
+    {
+        $rs = $this->_db->getAssoc(sprintf(
+            "SELECT eis.instance_id
+             FROM evaluation_stage_evaluator ese
+             INNER JOIN evaluation_instance_stage eis
+                     ON eis.instance_stage_id = ese.instance_stage_id
+             WHERE ese.evaluator_id = %s",
+            (int) $evaluatorID
+        ));
+        return (!empty($rs) ? (int) $rs['instance_id'] : false);
+    }
+
+
+    private function _criteriaBelongsToEvaluator($evaluatorID, $instanceCriteriaID)
+    {
+        $rs = $this->_db->getAssoc(sprintf(
+            "SELECT eic.instance_criteria_id, eic.data_type, eic.max_range
+             FROM evaluation_instance_criteria eic
+             INNER JOIN evaluation_stage_evaluator ese
+                     ON ese.instance_stage_id = eic.instance_stage_id
+             WHERE eic.instance_criteria_id = %s
+               AND ese.evaluator_id = %s",
+            (int) $instanceCriteriaID,
+            (int) $evaluatorID
+        ));
+        return (!empty($rs) ? $rs : false);
+    }
+
+    public function saveCriteriaValue($evaluatorID, $instanceCriteriaID, $value, $grade = null)
+    {
+        $criterion = $this->_criteriaBelongsToEvaluator($evaluatorID, $instanceCriteriaID);
+        if ($criterion === false)
+        {
+            return false;
+        }
+
+        $maxRange = isset($criterion['max_range']) && is_numeric($criterion['max_range'])
+            ? (float) $criterion['max_range'] : self::DEFAULT_MAX_RANGE;
+
+        $grade = EvaluationScore::parseGrade($grade, $maxRange);
+
+        $rs = $this->_db->getAssoc(sprintf(
+            "SELECT value_id FROM evaluation_criteria_value
+             WHERE evaluator_id = %s AND instance_criteria_id = %s",
+            (int) $evaluatorID,
+            (int) $instanceCriteriaID
+        ));
+
+        if (!empty($rs))
+        {
+            $this->_db->query(sprintf(
+                "UPDATE evaluation_criteria_value SET value = '%s', grade = %s
+                 WHERE value_id = %s",
+                $this->_db->escapeString($value),
+                ($grade === null ? 'NULL' : sprintf('%.2f', $grade)),
+                (int) $rs['value_id']
+            ));
+        }
+        else
+        {
+            $this->_db->query(sprintf(
+                "INSERT INTO evaluation_criteria_value
+                    (evaluator_id, instance_criteria_id, value, grade)
+                 VALUES (%s, %s, '%s', %s)",
+                (int) $evaluatorID,
+                (int) $instanceCriteriaID,
+                $this->_db->escapeString($value),
+                ($grade === null ? 'NULL' : sprintf('%.2f', $grade))
+            ));
+        }
+
+        return true;
+    }
+
+public function getInstanceIDsFiledUnder($candidateID, $jobOrderID)
+{
+    $rows = $this->_db->getAllAssoc(sprintf(
+        "SELECT instance_id FROM evaluation_instance
+         WHERE candidate_id = %s AND last_seed_job_order_id = %s",
+        (int) $candidateID,
+        (int) $jobOrderID
+    ));
+
+    return array_map(function ($row) { return (int) $row['instance_id']; }, $rows);
+}
+
+
+    public function getFullEvaluation($instanceID)
+    {
+        $stages = $this->getStages($instanceID);
+        if (empty($stages))
+        {
+            return array();
+        }
+
+        $stageIDs = array();
+        $byStageID = array();
+        foreach ($stages as $i => $stage)
+        {
+            $stages[$i]['criteria']   = array();
+            $stages[$i]['evaluators'] = array();
+
+            $stageIDs[] = (int) $stage['instance_stage_id'];
+            $byStageID[(int) $stage['instance_stage_id']] = $i;
+        }
+        $stageIDList = implode(',', $stageIDs);
+
+
+        $criteriaRows = $this->_db->getAllAssoc(sprintf(
+            "SELECT instance_stage_id, instance_criteria_id, criteria_name,
+                    data_type, is_gradeable, position, weight, max_range
+             FROM evaluation_instance_criteria
+             WHERE instance_stage_id IN (%s)
+             ORDER BY position ASC, instance_criteria_id ASC",
+            $stageIDList
+        ));
+
+        foreach ($criteriaRows as $row)
+        {
+            $i = $byStageID[(int) $row['instance_stage_id']];
+            $stages[$i]['criteria'][] = $row;
+        }
+
+        $evaluatorRows = $this->_db->getAllAssoc(sprintf(
+            "SELECT instance_stage_id, evaluator_id, evaluator_name
+             FROM evaluation_stage_evaluator
+             WHERE instance_stage_id IN (%s)
+             ORDER BY evaluator_id ASC",
+            $stageIDList
+        ));
+
+        if (empty($evaluatorRows))
+        {
+            return $stages;
+        }
+
+        $evaluatorIDs   = array();
+        $evaluatorIndex = array();
+        foreach ($evaluatorRows as $row)
+        {
+            $i = $byStageID[(int) $row['instance_stage_id']];
+
+            $stages[$i]['evaluators'][] = array(
+                'evaluator_id'   => (int) $row['evaluator_id'],
+                'evaluator_name' => $row['evaluator_name'],
+                'values'         => array(),
+                'grades'         => array()
+            );
+
+            $evaluatorIDs[] = (int) $row['evaluator_id'];
+            $evaluatorIndex[(int) $row['evaluator_id']] = array(
+                $i, count($stages[$i]['evaluators']) - 1
+            );
+        }
+
+
+        $valueRows = $this->_db->getAllAssoc(sprintf(
+            "SELECT evaluator_id, instance_criteria_id, value, grade
+             FROM evaluation_criteria_value
+             WHERE evaluator_id IN (%s)",
+            implode(',', $evaluatorIDs)
+        ));
+
+        foreach ($valueRows as $row)
+        {
+            $evaluatorID = (int) $row['evaluator_id'];
+            if (!isset($evaluatorIndex[$evaluatorID])) continue;
+
+            list($i, $j) = $evaluatorIndex[$evaluatorID];
+            $criteriaID = $row['instance_criteria_id'];
+
+            $stages[$i]['evaluators'][$j]['values'][$criteriaID] = $row['value'];
+
+            if ($row['grade'] !== null)
+            {
+                $stages[$i]['evaluators'][$j]['grades'][$criteriaID] = (float) $row['grade'];
+            }
+        }
+
+        return $stages;
+    }
+
+    public function seedFromStages($instanceID, $templateStages)
+    {
+        $added = array('stages' => 0, 'criteria' => 0);
+
+        if (empty($templateStages))
+        {
+            return $added;
+        }
+        $existingStages = array();
+        foreach ($this->getStages($instanceID) as $stage)
+        {
+            $key = $this->_nameKey($stage['stage_name']);
+            $existingStages[$key] = (int) $stage['instance_stage_id'];
+        }
+
+        foreach ($templateStages as $templateStage)
+        {
+            $stageKey = $this->_nameKey($templateStage['stage_name']);
+
+            if (isset($existingStages[$stageKey]))
+            {
+                $instanceStageID = $existingStages[$stageKey];
+                $isNewStage = false;
+            }
+            else
+            {
+                $this->_db->query(sprintf(
+                    "INSERT INTO evaluation_instance_stage
+                        (instance_id, stage_name, position, weight)
+                     VALUES (%s, '%s', %s, %s)",
+                    (int) $instanceID,
+                    $this->_db->escapeString($templateStage['stage_name']),
+                    $this->getNextStagePosition($instanceID),
+                    $this->_sanitizeWeight(
+                        isset($templateStage['weight']) ? $templateStage['weight'] : 0
+                    )
+                ));
+                $instanceStageID = $this->_db->getLastInsertID();
+                $existingStages[$stageKey] = (int) $instanceStageID;
+
+                $isNewStage = true;
+                $added['stages']++;
+            }
+
+            if (empty($templateStage['criteria']))
+            {
+                continue;
+            }
+
+            /* Index this stage's existing criteria by normalised name. */
+            $existingCriteria = array();
+            if (!$isNewStage)
+            {
+                foreach ($this->getCriteria($instanceStageID) as $criterion)
+                {
+                    $existingCriteria[$this->_nameKey($criterion['criteria_name'])] = true;
+                }
+            }
+
+            foreach ($templateStage['criteria'] as $criterion)
+            {
+                $criteriaKey = $this->_nameKey($criterion['criteria_name']);
+
+                if (isset($existingCriteria[$criteriaKey]))
+                {
+                    continue;
+                }
+
+                $dataType = isset($criterion['data_type']) ? $criterion['data_type'] : 'text';
+                $weight   = isset($criterion['weight'])    ? $criterion['weight']    : 0;
+
+                $maxRange = isset($criterion['max_range']) ? $criterion['max_range'] : self::DEFAULT_MAX_RANGE;
+
+                $position = $isNewStage
+                    ? (int) $criterion['position']
+                    : $this->getNextCriteriaPosition($instanceStageID);
+
+                $this->addCriteria(
+                    $instanceStageID, $criterion['criteria_name'],
+                    $dataType, $position, $weight, 0, $maxRange
+                );
+
+                $existingCriteria[$criteriaKey] = true;
+                $added['criteria']++;
+            }
+        }
+
+        $this->touchInstance($instanceID);
+
+        return $added;
+    }
+
+    private function _nameKey($name)
+    {
+        return mb_strtolower(trim($name), 'UTF-8');
+    }
+    private function _sanitizeWeight($weight)
+    {
+        $weight = (float) $weight;
+
+        if ($weight < 0)      { $weight = 0; }
+        if ($weight > 9999.99) { $weight = 9999.99; }
+
+        return sprintf('%.2f', $weight);
+    }
+
+
+    private function _sanitizeMaxRange($maxRange)
+    {
+        $maxRange = is_numeric($maxRange) ? (float) $maxRange : self::DEFAULT_MAX_RANGE;
+
+        if ($maxRange <= 0)       { $maxRange = self::DEFAULT_MAX_RANGE; }
+        if ($maxRange > 9999.99)  { $maxRange = 9999.99; }
+
+        return sprintf('%.2f', $maxRange);
+    }
+
+public function getMostRecentInstanceScored($candidateID)
+{
+    $instances = $this->getInstancesForCandidateScored($candidateID);
+    return empty($instances) ? null : $instances[0];
+}
+
+public function writeInstanceCSV($out, $instanceID, $candidateName)
+{
+    $instance = $this->getInstance($instanceID);
+    $title    = $instance ? $instance['title'] : 'Evaluation';
+
+    $stages  = $this->getFullEvaluation($instanceID);
+    $scoring = EvaluationScore::scoreEvaluation($stages);
+    $stages  = $scoring['stages'];
+fputcsv($out, array('Name', $title));
+    fputcsv($out, array('Candidate', $candidateName));
+    fputcsv($out, array('Score', EvaluationScore::formatFull($scoring['score'])));
+    foreach ($stages as $stage)
+    {
+        fputcsv($out, array());
+        fputcsv($out, array('Stage', $stage['stage_name']));
+        fputcsv($out, array('Stage Weight', $stage['weight']));
+        fputcsv($out, array('Stage Score', EvaluationScore::format($stage['scoring']['score'])));
+        fputcsv($out, array());
+
+        $criteriaHeader = array('Criteria');
+        foreach ($stage['criteria'] as $criterion)
+        {
+            $label = $criterion['is_gradeable'] ? 'score' : 'text';
+            $criteriaHeader[] = $criterion['criteria_name'] . ' (' . $label . ')';
+        }
+        fputcsv($out, $criteriaHeader);
+
+        if (empty($stage['evaluators']))
+        {
+            continue;
+        }
+
+        foreach ($stage['evaluators'] as $evaluator)
+        {
+            $row = array($evaluator['evaluator_name']);
+            foreach ($stage['criteria'] as $criterion)
+            {
+                $criteriaID = $criterion['instance_criteria_id'];
+                $row[] = $criterion['is_gradeable']
+                    ? (isset($evaluator['grades'][$criteriaID]) ? $evaluator['grades'][$criteriaID] : '')
+                    : (isset($evaluator['values'][$criteriaID]) ? $evaluator['values'][$criteriaID] : '');
+            }
+            fputcsv($out, $row);
+        }
+    }
+
+    return $scoring['score'];
+}
+public function writeStagePivotCSV($out, array $rows)
+{
+    $candidateStages = array();  // candidateName => scored stages
+    $stageOrder      = array();  // stage_name => true, preserves first-seen order
+    $stageCriteria   = array();  // stage_name => [criteria_name => 'Name (score|text)']
+    $stageWeights    = array();  // stage_name => weight (from first candidate that has it)
+
+    foreach ($rows as $r)
+    {
+        $stages  = $this->getFullEvaluation($r['instanceID']);
+        $scoring = EvaluationScore::scoreEvaluation($stages);
+
+        $candidateStages[$r['candidateName']] = $scoring['stages'];
+
+        foreach ($scoring['stages'] as $stage)
+        {
+            $stageName = $stage['stage_name'];
+
+            if (!isset($stageOrder[$stageName]))
+            {
+                $stageOrder[$stageName]    = true;
+                $stageCriteria[$stageName] = array();
+                $stageWeights[$stageName]  = $stage['weight'];
+            }
+
+            foreach ($stage['criteria'] as $criterion)
+            {
+                $name = $criterion['criteria_name'];
+
+                if (!isset($stageCriteria[$stageName][$name]))
+                {
+                    $label = $criterion['is_gradeable'] ? 'score' : 'text';
+                    $stageCriteria[$stageName][$name] = $name . ' (' . $label . ')';
+                }
+            }
+        }
+    }
+
+    foreach (array_keys($stageOrder) as $stageName)
+    {
+        fputcsv($out, array());
+        fputcsv($out, array());
+        fputcsv($out, array('Stage', $stageName));
+        fputcsv($out, array('Stage Weight', $stageWeights[$stageName]));
+        fputcsv($out, array());
+
+        $criteriaNames = array_keys($stageCriteria[$stageName]);
+
+        $header = array('Candidate', 'Evaluator');
+        foreach ($criteriaNames as $name)
+        {
+            $header[] = $stageCriteria[$stageName][$name];
+        }
+        $header[] = 'Score';
+        $header[] = 'Stage Score';
+        fputcsv($out, $header);
+
+        foreach ($rows as $r)
+        {
+            $candidateName = $r['candidateName'];
+            $matchedStage  = null;
+
+            foreach ($candidateStages[$candidateName] as $stage)
+            {
+                if ($stage['stage_name'] === $stageName)
+                {
+                    $matchedStage = $stage;
+                    break;
+                }
+            }
+
+            if ($matchedStage === null || empty($matchedStage['evaluators']))
+            {
+                $row = array($candidateName, '');
+                foreach ($criteriaNames as $name)
+                {
+                    $row[] = '';
+                }
+                $row[] = '';
+                $row[] = '';
+                fputcsv($out, $row);
+                continue;
+            }
+
+            $criteriaIDByName = array();
+            $gradeableByName  = array();
+            foreach ($matchedStage['criteria'] as $criterion)
+            {
+                $criteriaIDByName[$criterion['criteria_name']] = $criterion['instance_criteria_id'];
+                $gradeableByName[$criterion['criteria_name']]  = $criterion['is_gradeable'];
+            }
+
+            $stageScoreDisplay = EvaluationScore::format($matchedStage['scoring']['score']);
+            $evaluatorScores   = isset($matchedStage['scoring']['evaluators'])
+                ? $matchedStage['scoring']['evaluators']
+                : array();
+
+            foreach ($matchedStage['evaluators'] as $evaluator)
+            {
+                $row = array($candidateName, $evaluator['evaluator_name']);
+
+                foreach ($criteriaNames as $name)
+                {
+                    if (!isset($criteriaIDByName[$name]))
+                    {
+                        $row[] = '';
+                        continue;
+                    }
+
+                    $criteriaID = $criteriaIDByName[$name];
+
+                    $row[] = $gradeableByName[$name]
+                        ? (isset($evaluator['grades'][$criteriaID]) ? $evaluator['grades'][$criteriaID] : '')
+                        : (isset($evaluator['values'][$criteriaID]) ? $evaluator['values'][$criteriaID] : '');
+                }
+
+                $evaluatorID    = $evaluator['evaluator_id'];
+                $evaluatorScore = isset($evaluatorScores[$evaluatorID]) ? $evaluatorScores[$evaluatorID] : null;
+
+                $row[] = EvaluationScore::format($evaluatorScore);
+                $row[] = $stageScoreDisplay;
+
+                fputcsv($out, $row);
+            }
+        }
+    }
+}
+}
+?>

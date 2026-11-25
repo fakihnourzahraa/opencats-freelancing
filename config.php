@@ -16,10 +16,10 @@ if( !defined('LEGACY_ROOT') )
 }
 
 /* Database configuration. */
-define('DATABASE_USER', 'dev');
-define('DATABASE_PASS', 'dev');
-define('DATABASE_HOST', 'opencatsdb');
-define('DATABASE_NAME', 'cats_test');
+define('DATABASE_USER', 'catsdev');
+define('DATABASE_PASS', 'catsdev');
+define('DATABASE_HOST', 'localhost');
+define('DATABASE_NAME', 'opencats');
 
 /* Authentication Configuration
  * Options are sql and ldap
@@ -178,17 +178,17 @@ define('MAIL_MAILER', 3);
 /* Sendmail Settings. You don't need to worry about this unless MAIL_MAILER
  * is set to 2.
  */
-define('MAIL_SENDMAIL_PATH', "/usr/sbin/sendmail");
+define('MAIL_SENDMAIL_PATH', '/usr/sbin/sendmail');
 
 /* SMTP Settings. You don't need to worry about this unless MAIL_MAILER is
  * set to 3. If your server requires authentication, set MAIL_SMTP_AUTH to
  * true and configure MAIL_SMTP_USER and MAIL_SMTP_PASS.
  */
-define('MAIL_SMTP_HOST', "localhost");
+define('MAIL_SMTP_HOST', 'localhost');
 define('MAIL_SMTP_PORT', 587);
 define('MAIL_SMTP_AUTH', true);
-define('MAIL_SMTP_USER', "user");
-define('MAIL_SMTP_PASS', "password");
+define('MAIL_SMTP_USER', 'user');
+define('MAIL_SMTP_PASS', 'password');
 //Options: '', 'ssl' or 'tls'
 define('MAIL_SMTP_SECURE', "tls");
 
@@ -244,7 +244,7 @@ class JOB_TYPES {
         'H' => 'Hire',
         'C' => 'Contract',
         'C2H' => 'Contract To Hire',
-        'FL' => 'Freelance'       
+        'FL' => 'Freelance'
     );
 };
 

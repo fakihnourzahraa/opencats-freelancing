@@ -683,19 +683,74 @@ class DataGrid
         return 'submitFilter'. md5($this->_instanceName) .'();';
     }
 
-    /**
-     * Returns the current value of a filter column (or empty string if no filter is set)
-     *
-     * @param string column name
-     * @return string filter value
-     */
-    public function getFilterValue($columnName)
+    // /**
+    //  * Returns the current value of a filter column (or empty string if no filter is set)
+    //  *
+    //  * @param string column name
+    //  * @return string filter value
+    //  */
+    // public function getFilterValue($columnName)
+    // {
+    //     if (!isset($this->_parameters['filter']) ||
+    //         $this->_parameters['filter'] === '')
+    //     {
+    //         return '';
+    //     }
+
+    //     foreach (explode(',', $this->_parameters['filter']) as $filter)
+    //     {
+    //         if ($filter === '')
+    //         {
+    //             continue;
+    //         }
+
+    //         $operatorPosition = strpos($filter, '=');
+
+    //         if ($operatorPosition === false)
+    //         {
+    //             continue;
+    //         }
+
+    //         $dataColumnName = urldecode(
+    //             substr($filter, 0, $operatorPosition)
+    //         );
+
+    //         if ($columnName !== $dataColumnName)
+    //         {
+    //             continue;
+    //         }
+
+    //         /*
+    //          * DataGrid filter operators are two characters, e.g.
+    //          * ==, =~, =<, =>, =# and =@.
+    //          */
+    //         return urldecode(
+    //             substr($filter, $operatorPosition + 2)
+    //         );
+    //     }
+
+    //     return '';
+    // }
+
+        public function getFilterValue($columnName)
     {
         if (!isset($this->_parameters['filter']) ||
             $this->_parameters['filter'] === '')
         {
             return '';
         }
+
+        /*
+         * DataGrid filter operators. Longer operators must come before
+         * shorter ones so the longest match wins.
+         *
+         * Three characters: =d> =d< =in =bt
+         * Two characters:   =~ == => =< =# =@ =e
+         */
+        $operators = array(
+            '=d>', '=d<', '=in', '=bt',
+            '=~', '==', '=>', '=<', '=#', '=@', '=e'
+        );
 
         foreach (explode(',', $this->_parameters['filter']) as $filter)
         {
@@ -720,9 +775,19 @@ class DataGrid
                 continue;
             }
 
+            foreach ($operators as $operator)
+            {
+                if (substr($filter, $operatorPosition, strlen($operator)) === $operator)
+                {
+                    return urldecode(
+                        substr($filter, $operatorPosition + strlen($operator))
+                    );
+                }
+            }
+
             /*
-             * DataGrid filter operators are two characters, e.g.
-             * ==, =~, =<, =>, =# and =@.
+             * Unknown operator: fall back to the original two-character
+             * behaviour.
              */
             return urldecode(
                 substr($filter, $operatorPosition + 2)
@@ -755,7 +820,11 @@ class DataGrid
 
                 if ($columnName == $dataColumnName)
                 {
-                    return urldecode(substr($data, strpos($data, '='), 2));
+                    
+                    $eqPos = strpos($data, '=');
+                    $three = substr($data, $eqPos, 3);
+                    $opLen = ($three === '=d>' || $three === '=d<' || $three === '=in' || $three === '=bt') ? 3 : 2;
+                    return substr($data, $eqPos, $opLen);
                 }
             }
         }
@@ -866,12 +935,11 @@ class DataGrid
         $filtersApplied = false;
         foreach ($this->_classColumns as $index => $data)
         {
-            if (!$filtersApplied && $this->getFilterValue($index))
+            if ($this->getFilterValue($index) !== '' || $this->getFilterOperator($index) == '=e')
             {
                 $filtersApplied = true;
             }
         }
-
         echo '<fieldset class="filterAreaFieldSet" id="filterResultsArea', $md5InstanceName, '" ';
         if (!$filtersApplied || (isset($this->_parameters['filterVisible']) && $this->_parameters['filterVisible'] == false))
         {
@@ -880,14 +948,33 @@ class DataGrid
         echo '><legend class="filterAreaLegend">Filter</legend>';
 
         echo '<table style="border-collapse: collapse;"><tr><td width="100%" style="vertical-align:top;" id="filterResultsAreaTable', $md5InstanceName, '">';
-
-        $counterFilters = 0;
-
+$counterFilters = 0;
         foreach ($this->_classColumns as $index => $data)
         {
-            $filterValue = $this->getFilterValue($index);
+            /* Collect every filter token belonging to this column, so range
+               filters (=d>/=d<, =>/=<) render as one box per bound. */
+            $filterTokens = array();
+            if (isset($this->_parameters['filter']))
+            {
+                $ops = array('=d>', '=d<', '=in', '=bt', '=~', '==', '=>', '=<', '=#', '=@', '=e');
+                foreach (explode(',', $this->_parameters['filter']) as $tok)
+                {
+                    $eqPos = strpos($tok, '=');
+                    if ($eqPos === false) continue;
+                    if (urldecode(substr($tok, 0, $eqPos)) != $index) continue;
 
-            if ($filterValue != '')
+                    foreach ($ops as $op)
+                    {
+                        if (substr($tok, $eqPos, strlen($op)) === $op)
+                        {
+                            $filterTokens[] = array($op, urldecode(substr($tok, $eqPos + strlen($op))));
+                            continue 2;
+                        }
+                    }
+                }
+            }
+
+            if (!empty($filterTokens))
             {
                 $counterFilters++;
 
@@ -897,48 +984,72 @@ class DataGrid
                     unset ($filterableColumns[array_search($index, $filterableColumns)]);
                 }
 
-                $filterOperator = $this->getFilterOperator($index);
-                $filterOperatorHuman = '';
-                switch ($filterOperator)
+                if (isset($data['filterDescription']))
                 {
-                    case '==':
-                        $filterOperatorHuman = ' is equal to';
-                        break;
-
-                    case '=~':
-                        $filterOperatorHuman = ' contains';
-                        break;
-
-                    case '=>':
-                        $filterOperatorHuman = ' is greater than';
-                        break;
-
-                    case '=<':
-                        $filterOperatorHuman = ' is less than';
-                        break;
-
-                    case '=#':
-                        $filterOperatorHuman = ' has element';
-                        break;
+                    echo '<span class="filterArea">', $data['filterDescription'], '</span>';
+                    continue;
                 }
 
-                echo '<span class="filterArea">';
-                echo '<a href="javascript:void(0);" onclick="this.parentNode.style.display=\'none\'; ', $this->getJSRemoveFilter($index), '">';
-                echo '<img src="images/actions/delete_small.gif" style="padding:0px; margin:0px;" border="0" alt="" title="Remove this Filter" />';
-                echo '</a>&nbsp;';
+                foreach ($filterTokens as $token)
+                {
+                    $filterOperator = $token[0];
+                    $filterValue    = $token[1];
 
-                if (!isset($data['filterDescription']))
-                {
-                    echo '\'', $index, '\'', $filterOperatorHuman,': ';
-                    echo '<input class="inputbox" style="width:180px;" value="', htmlspecialchars($filterValue), '" onChange="addColumnToFilter(\'filterArea', $md5InstanceName, '\', urlDecode(\'', urlencode($index), '\'), \'', $filterOperator, '\', this.value);" />';
+                    if ($filterValue === '' && $filterOperator != '=e') continue;
+
+                    $filterOperatorHuman = '';
+                    switch ($filterOperator)
+                    {
+                        case '==':
+                            $filterOperatorHuman = ' is equal to';
+                            break;
+                        case '=~':
+                            $filterOperatorHuman = ' contains';
+                            break;
+                        case '=>':
+                            $filterOperatorHuman = ' is greater than';
+                            break;
+                        case '=<':
+                            $filterOperatorHuman = ' is less than';
+                            break;
+                        case '=#':
+                            $filterOperatorHuman = ' has element';
+                            break;
+                        case '=bt':
+                            $filterOperatorHuman = ' is between';
+                            break;
+                        case '=in':
+                            $filterOperatorHuman = ' is in';
+                            break;
+                        case '=d>':
+                            $filterOperatorHuman = ' from';
+                            break;
+                        case '=d<':
+                            $filterOperatorHuman = ' to';
+                            break;
+                        case '=e':
+                            $filterOperatorHuman = ' is empty';
+                            break;
+                    }
+
+                    echo '<span class="filterArea">';
+                    echo '<a href="javascript:void(0);" onclick="this.parentNode.style.display=\'none\'; ', $this->getJSRemoveFilter($index), '">';
+                    echo '<img src="images/actions/delete_small.gif" style="padding:0px; margin:0px;" border="0" alt="" title="Remove this Filter" />';
+                    echo '</a>&nbsp;';
+                    if ($filterOperator === '=e')
+                    {
+                        echo '\'', $index, '\'', $filterOperatorHuman;
+                    }
+                    else
+                    {
+                        echo '\'', $index, '\'', $filterOperatorHuman, ': ';
+                        echo '<input class="inputbox" style="width:180px;" value="', htmlspecialchars($filterValue), '" onChange="addColumnToFilter(\'filterArea', $md5InstanceName, '\', urlDecode(\'', urlencode($index), '\'), \'', $filterOperator, '\', this.value);" />';
+                    }
+                    echo '</span>';
                 }
-                else
-                {
-                    echo ($data['filterDescription']);
-                }
-                echo '</span>';
             }
-        }
+            }
+        
 
         /* Remove columns we can not apply a filter to, and set what kind of filters can be applied to each column. */
         foreach ($filterableColumns as $index => $value)
@@ -953,20 +1064,51 @@ class DataGrid
             {
                 if (isset($this->_classColumns[$value]['filterTypes']))
                 {
-                    $filterableColumns[$index] .= '!@!' . $this->_classColumns[$value]['filterTypes'];
+                    $types = $this->_classColumns[$value]['filterTypes'];
+                    if (strpos($types, '=e') === false) {
+                        $types .= '=e';
+                    }
+                    $filterableColumns[$index] .= '!@!' . $types;
                 }
                 else
                 {
-                    $filterableColumns[$index] .= '!@!' . '===~';
+                    $filterableColumns[$index] .= '!@!' . '===~=e';
                 }
             }
         }
+
+        echo '<script type="text/javascript">';
+        foreach ($this->_classColumns as $columnName => $data) {
+            if (!isset($data['filterTypes'])) continue;
+            $types = $data['filterTypes'];
+            $isDate = (strpos($types, '=d>') !== false || strpos($types, '=d<') !== false);
+            if ($isDate) {
+                echo 'if (!filterDateRangeRegistry[' . json_encode($columnName) . ']) {
+                    filterDateRangeRegistry[' . json_encode($columnName) . '] = true; }';
+            }
+
+            if (isset($data['filterDropDownOptions'])) {
+                echo 'if (!filterDropDownRegistry[' . json_encode($columnName) . '] ||
+                      !filterDropDownRegistry[' . json_encode($columnName) . '].length) {
+                    filterDropDownRegistry[' . json_encode($columnName) . '] = ' .
+                    json_encode($data['filterDropDownOptions']) . '; }';
+            }
+            if (isset($data['filterIsInOptions'])) {
+                echo 'if (!filterIsInRegistry[' . json_encode($columnName) . '] ||
+                    !filterIsInRegistry[' . json_encode($columnName) . '].length) {
+                    filterIsInRegistry[' . json_encode($columnName) . '] = ' .
+                    json_encode($data['filterIsInOptions']) . '; }';
+            }
+        }
+        echo '</script>';
+
         $template = new Template();
         $template->assign('md5InstanceName', $md5InstanceName);
         $template->assign('arrayKeysString', json_encode(array_values($filterableColumns)));
         $template->assign('counterFilters', $counterFilters);
         $template->display('./lib/datagrid/FilterArea.tpl');
     }
+
 
     /**
      * Gets the current layout for this datagrid's columns.  If no layout is defined, uses default layout.
@@ -1151,8 +1293,23 @@ class DataGrid
                     continue;
                 }
 
-                $columnName = urldecode(substr($data, 0, strpos($data, '=')));
-                $argument = urldecode(substr($data, strpos($data, '=') + 2));
+                              $columnName = urldecode(substr($data, 0, strpos($data, '=')));
+                 $eqPos = strpos($data, '=');
+                                 $operatorLength = 2;
+                $threeCharOps = array('=d>', '=d<', '=in', '=bt');
+                if (in_array(substr($data, $eqPos, 3), $threeCharOps))
+                {
+                    $operatorLength = 3;
+                }
+                
+                $argument = urldecode(substr($data, $eqPos + $operatorLength));
+               // $argument = urldecode(substr($data, strpos($data, '=') + 2));
+              $op = substr($data, $eqPos, $operatorLength);
+                /* Is this a valid column? */
+                if (!isset($this->_classColumns[$columnName]))
+                {
+                    continue;
+                }
 
                 /* Is this a valid column? */
                 if (!isset($this->_classColumns[$columnName]))
@@ -1174,7 +1331,7 @@ class DataGrid
                     continue;
                 }
 
-                if ($argument == '')
+                if ($argument == '' && $op !== '=e')
                 {
                     continue;
                 }
@@ -1210,10 +1367,37 @@ class DataGrid
                 {
                     $argument = trim($argument);
 
+                    if (strpos($data, '=in') !== false)
+                    {
+                        if (isset($this->_classColumns[$columnName]['filter']))
+                        {
+                            $whereSQL_or[] = $this->_classColumns[$columnName]['filter'] . ' = ' . $db->makeQueryString($argument);
+                        }
+                    }
+
                     /* Is equal to (==) */
+/* Is equal to (==) */
                     if (strpos($data, '==') !== false)
                     {
-                        if (isset($this->_classColumns[$columnName]['filterInList']) && $this->_classColumns[$columnName]['filterInList'] == true)
+                        $isDateColumn = isset($this->_classColumns[$columnName]['filterTypes']) &&
+                            (strpos($this->_classColumns[$columnName]['filterTypes'], '=d>') !== false ||
+                             strpos($this->_classColumns[$columnName]['filterTypes'], '=d<') !== false);
+
+                        if ($isDateColumn)
+                        {
+                            $dateSQLFormat = $_SESSION['CATS']->isDateDMY() ? '%d-%m-%y' : '%m-%d-%y';
+
+                            if (isset($this->_classColumns[$columnName]['filter']))
+                            {
+                                $whereSQL_or[] = 'DATE(' . $this->_classColumns[$columnName]['filter'] . ') = STR_TO_DATE(' . $db->makeQueryString($argument) . ', \'' . $dateSQLFormat . '\') ';
+                            }
+
+                            if (isset($this->_classColumns[$columnName]['filterHaving']))
+                            {
+                                $havingSQL_or[] = 'DATE(' . $this->_classColumns[$columnName]['filterHaving'] . ') = STR_TO_DATE(' . $db->makeQueryString($argument) . ', \'' . $dateSQLFormat . '\') ';
+                            }
+                        }
+                        else if (isset($this->_classColumns[$columnName]['filterInList']) && $this->_classColumns[$columnName]['filterInList'] == true)
                         {
                             if (isset($this->_classColumns[$columnName]['filter']))
                             {
@@ -1238,6 +1422,7 @@ class DataGrid
                             }
                         }
                     }
+                    
 
                     /* Contains (=~) */
                     if (strpos($data, '=~') !== false)
@@ -1258,12 +1443,12 @@ class DataGrid
                     {
                         if (isset($this->_classColumns[$columnName]['filter']))
                         {
-                            $whereSQL_or[] = $this->_classColumns[$columnName]['filter'] . ' <= ' . $db->makeQueryInteger($argument) .' ';
+                            $whereSQL_or[] = $this->_classColumns[$columnName]['filter'] . ' <= ' . $db->makeQueryDouble($argument) .' ';
                         }
 
                         if (isset($this->_classColumns[$columnName]['filterHaving']))
                         {
-                            $havingSQL_or[] = $this->_classColumns[$columnName]['filterHaving'] . ' <= ' . $db->makeQueryInteger($argument)  .' ';
+                            $havingSQL_or[] = $this->_classColumns[$columnName]['filterHaving'] . ' <= ' . $db->makeQueryDouble($argument)  .' ';
                         }
                     }
 
@@ -1272,12 +1457,12 @@ class DataGrid
                     {
                         if (isset($this->_classColumns[$columnName]['filter']))
                         {
-                            $whereSQL_or[] = $this->_classColumns[$columnName]['filter'] . ' >= ' . $db->makeQueryInteger($argument) .' ';
+                            $whereSQL_or[] = $this->_classColumns[$columnName]['filter'] . ' >= ' . $db->makeQueryDouble($argument) .' ';
                         }
 
                         if (isset($this->_classColumns[$columnName]['filterHaving']))
                         {
-                            $havingSQL_or[] = $this->_classColumns[$columnName]['filterHaving'] . ' >= ' . $db->makeQueryInteger($argument)  .' ';
+                            $havingSQL_or[] = $this->_classColumns[$columnName]['filterHaving'] . ' >= ' . $db->makeQueryDouble($argument)  .' ';
                         }
                     }
 
@@ -1307,6 +1492,30 @@ class DataGrid
                         }
                     }
                     
+                     /* Is empty (=e) */
+                    if ($op === '=e')
+                    {
+                        if (isset($this->_classColumns[$columnName]['filterHaving']))
+                        {
+                            $havingSQL_or[] = '(' . $this->_classColumns[$columnName]['filterHaving'] . ' IS NULL OR '
+                                . $this->_classColumns[$columnName]['filterHaving'] . ' = \'\') ';
+                        }
+                        else if (isset($this->_classColumns[$columnName]['filter']))
+                        {
+                            $whereSQL_or[] = '(' . $this->_classColumns[$columnName]['filter'] . ' IS NULL OR '
+                                . $this->_classColumns[$columnName]['filter'] . ' = \'\') ';
+                        }
+                    }
+                    
+                    if ($op === '=in')
+                    {
+                        if (isset($this->_classColumns[$columnName]['filterHaving']))
+                        {
+                            $havingSQL_or[] = $this->_classColumns[$columnName]['filterHaving']
+                                . ' LIKE ' . $db->makeQueryString('%>' . $argument . '</a>') . ' ';
+                        }
+                    }
+
                     /* Near Zipcode (=@) */
                     if (strpos($data, '=@') !== false)
                     {
@@ -1345,6 +1554,22 @@ class DataGrid
                         // TODO:  Actual geographic search?
                     }
 
+                    if (strpos($data, '=d<') !== false)
+                    {
+                        if (isset($this->_classColumns[$columnName]['filter']))
+                        {
+                            $dateSQLFormat = $_SESSION['CATS']->isDateDMY() ? '%d-%m-%y' : '%m-%d-%y';
+                            $whereSQL_or[] = 'DATE(' . $this->_classColumns[$columnName]['filter'] . ') <= STR_TO_DATE(' . $db->makeQueryString($argument) . ', \'' . $dateSQLFormat . '\') ';
+                        }
+                    }
+                    if (strpos($data, '=d>') !== false)
+                    {
+                        if (isset($this->_classColumns[$columnName]['filter']))
+                        {
+                            $dateSQLFormat = $_SESSION['CATS']->isDateDMY() ? '%d-%m-%y' : '%m-%d-%y';
+                            $whereSQL_or[] = 'DATE(' . $this->_classColumns[$columnName]['filter'] . ') >= STR_TO_DATE(' . $db->makeQueryString($argument) . ', \'' . $dateSQLFormat . '\') ';
+                        }
+                    }
                 }
                 if (count($whereSQL_or) > 0)
                 {
@@ -1575,6 +1800,11 @@ class DataGrid
     }
 
 
+    public function getExportRows()
+    {
+        $this->_getData();
+        return $this->_rs;
+    }
     /**
      * Outputs the current data in an HTML list.
      *

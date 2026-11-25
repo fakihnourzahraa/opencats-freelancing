@@ -166,6 +166,16 @@
                                     Add, rename, and remove extra text fields from various data types.
                                 </div>
                             </div></div>
+                                                        <div class="list-group-item"><div class="row g-2">
+                                <div class="col-sm-4 col-lg-3 fw-semibold">
+                                    <a href="<?php echo(CATSUtility::getIndexName()); ?>?m=settings&amp;a=customizeEvaluationTemplate">
+                                        Customize Evaluation Template
+                                    </a>
+                                </div>
+                                <div class="col-sm-8 col-lg-9">
+                                    Change your evaluations template based on the job order.
+                                </div>
+                            </div></div>
                         </div>
                         <br />
 

@@ -541,7 +541,25 @@ class Pipelines
                 candidate.is_admin_hidden AS isAdminHidden,
                 candidate.last_name AS lastName,
                 candidate.state As state,
+                candidate.city AS city,
+                candidate.zip AS zip,
+                candidate.address AS address,
                 candidate.email1 AS candidateEmail,
+                candidate.email2 AS candidateEmail2,
+                candidate.phone_home AS phoneHome,
+                candidate.phone_cell AS phoneCell,
+                candidate.phone_work AS phoneWork,
+                candidate.key_skills AS keySkills,
+                candidate.current_employer AS currentEmployer,
+                candidate.current_pay AS currentPay,
+                candidate.desired_pay AS desiredPay,
+                candidate.can_relocate AS canRelocate,
+                candidate.source AS source,
+                candidate.web_site AS webSite,
+                candidate.notes AS notes,
+                DATE_FORMAT(candidate.date_available, '%%m-%%d-%%y') AS dateAvailable,
+                DATE_FORMAT(candidate.date_modified, '%%m-%%d-%%y') AS dateModified,
+                DATE_FORMAT(candidate.date_created, '%%m-%%d-%%y') AS candidateDateCreated,
                 candidate_joborder.status AS jobOrderStatus,
                 candidate.is_hot AS isHotCandidate,
                 DATE_FORMAT(
@@ -761,6 +779,159 @@ class Pipelines
         return $this->_db->getAllAssoc($sql);
     }
 
+    public function getExtraFieldsForPipelineCandidates(array $candidateIDs)
+    {
+        if (empty($candidateIDs))
+        {
+            return array();
+        }
+        $safeIDs = implode(',', array_map('intval', $candidateIDs));
+        $sql = sprintf(
+            "SELECT
+                data_item_id AS candidateID,
+                field_name,
+                value
+            FROM
+                extra_field
+            WHERE
+                data_item_type = %s
+            AND
+                data_item_id IN (%s)",
+            DATA_ITEM_CANDIDATE,
+            $safeIDs
+        );
+        $rs = $this->_db->getAllAssoc($sql);
+        if (!$rs)
+        {
+            return array();
+        }
+        $indexed = array();
+        foreach ($rs as $row)
+        {
+            $indexed[$row['candidateID']][$row['field_name']] = $row['value'];
+        }
+        return $indexed;
+    }
+// public function getExtraFieldDefinitions()
+// {
+//     $sql = sprintf(
+//         "SELECT field_name
+//          FROM extra_field_settings
+//          WHERE data_item_type = %s
+//         DATA_ITEM_CANDIDATE,
+//     );
+//     $rs = $this->_db->getAllAssoc($sql);
+//     return $rs ? $rs : array();
+// }
+public function getExtraFieldDefinitions()
+{
+    $sql = sprintf(
+        "SELECT field_name, extra_field_type, extra_field_options, filter_type
+         FROM extra_field_settings
+         WHERE data_item_type = %s
+         ",
+        DATA_ITEM_CANDIDATE
+    );
+    $rs = $this->_db->getAllAssoc($sql);
+    return $rs ? $rs : array();
+
+}
+/* Date-type columns get DateUtility-based chronological comparison
+ * instead of the generic string comparison further down. 'dateAvailable'
+ * added for the operational dashboard's Date Available filter — same
+ * m-d-y-formatted-column treatment as dateCreated/dateModified.
+ */
+private function isDateColumn($col)
+{
+    return $col === 'dateCreated'
+        || $col === 'candidateDateCreated'
+        || $col === 'dateModified'
+        || $col === 'dateAvailable';
+}
+public function filterPipelineRows($pipelinesRS, $filterString, $columnMap, $valuesAreLocaleFormatted = true)
+{
+    if ($filterString === '')
+    {
+        return $pipelinesRS;
+    }
+    $pipelineFilters = array_filter(explode(',', $filterString));
+    foreach ($pipelineFilters as $filterItem)
+    {
+        $operators = array('=d>', '=d<', '=in', '=~', '==', '=>', '=<', '=e');
+        foreach ($operators as $op)
+        {
+            $pos = strpos($filterItem, $op);
+            if ($pos !== false)
+            {
+                $col = urldecode(substr($filterItem, 0, $pos));
+                $val = strtolower(urldecode(substr($filterItem, $pos + strlen($op))));
+                $col = isset($columnMap[$col]) ? $columnMap[$col] : $col;
+                $isDateColumn = $this->isDateColumn($col);
+            $pipelinesRS = array_filter($pipelinesRS, function($row) use ($col, $op, $val, $isDateColumn, $valuesAreLocaleFormatted) {
+    $fieldValue = isset($row[$col]) ? $row[$col] : '';
+if ($isDateColumn)
+{
+    $fieldDateFormat = $_SESSION['CATS']->isDateDMY() ? DATE_FORMAT_DDMMYY : DATE_FORMAT_MMDDYY;
+    $fieldValue = DateUtility::convert('-', $fieldValue, $fieldDateFormat, DATE_FORMAT_YYYYMMDD);
+    $valDateFormat = $valuesAreLocaleFormatted
+        ? ($_SESSION['CATS']->isDateDMY() ? DATE_FORMAT_DDMMYY : DATE_FORMAT_MMDDYY)
+        : DATE_FORMAT_MMDDYY;
+    $val = DateUtility::convert('-', $val, $valDateFormat, DATE_FORMAT_YYYYMMDD);
+    switch ($op) {
+        case '==':  return $fieldValue == $val;
+        case '=d>': return $fieldValue >= $val;
+        case '=d<': return $fieldValue <= $val;
+        default:    return true;
+    }
+}
+                    if ($op === '=d>' || $op === '=d<')
+                    {
+                        if ($fieldValue === '' || $fieldValue === null) return false;
+                        $fieldDate = DateTime::createFromFormat('m-d-y', $fieldValue);
+                        $valDate   = DateTime::createFromFormat('m-d-y', $val);
+                        if (!$fieldDate || !$valDate) return true;
+                        return $op === '=d>' ? $fieldDate >= $valDate : $fieldDate <= $valDate;
+                    }
+                    $fieldValue = strtolower($fieldValue);
+                    $val = strtolower($val);
+                    switch ($op) {
+                        case '=in':
+                        case '==': return $fieldValue == $val;
+                        case '=~': return strpos($fieldValue, $val) !== false;
+                        case '=>':  return $fieldValue >= $val;
+                        case '=<':  return $fieldValue <= $val;
+                        case '=e': return $fieldValue === '' || $fieldValue === null;
+                        default:    return true;
+                    }
+                });
+                $pipelinesRS = array_values($pipelinesRS);
+                break;
+            }
+        }
+    }
+    return $pipelinesRS;
+}
+/* Just enough to fill a dropdown. getJobOrderPipeline() returns the same
+       candidates with a dozen subqueries attached, which a <select> throws away. */
+    public function getJobOrderCandidateList($jobOrderID)
+    {
+        $sql = sprintf(
+            "SELECT
+                candidate.candidate_id AS candidateID,
+                candidate.first_name AS firstName,
+                candidate.last_name AS lastName
+            FROM
+                candidate_joborder
+            INNER JOIN candidate
+                ON candidate_joborder.candidate_id = candidate.candidate_id
+            WHERE
+                candidate_joborder.joborder_id = %s
+            ORDER BY
+                candidate.last_name ASC, candidate.first_name ASC",
+            $this->_db->makeQueryInteger($jobOrderID),
+        );
+        return $this->_db->getAllAssoc($sql);
+    }
 }
 
 ?>
