@@ -38,7 +38,12 @@ class SettingsUI extends UserInterface
     /* Maximum number of login history entries to display on User Details. */
     const MAX_RECENT_LOGINS = 15;
     private $_realAccessLevel = null;
-
+    private $extraFieldFilters = array(
+        'default'  => array('name' => 'Default (Text)'),
+        'date'     => array('name' => 'Date Range'),
+        'range'    => array('name' => 'Number Range'),
+        'dropdown' => array('name' => 'Dropdown')
+    );
 
     public function __construct()
     {

@@ -145,7 +145,7 @@
                                     }
                                     
                                     //TODO: Document me.
-                                    function addRowToTable<?php echo($index); ?>(rowName, rowTypeName, rowIndex)
+                                    function addRowToTable<?php echo($index); ?>(rowName, rowTypeName, rowFilterTypeName, rowIndex)
                                     {
                                         tbl = document.getElementById('extraFieldsTable<?php echo($index); ?>');
                                         var lastRow = tbl.rows.length;
@@ -169,7 +169,11 @@
                                         
                                         var cellLeft = row.insertCell(2);
                                         var textNode = document.createTextNode(rowTypeName);
-                                        cellLeft.appendChild(textNode);                                            
+                                        cellLeft.appendChild(textNode);
+
+                                        var cellFilterType = row.insertCell(3);
+                                        var filterTextNode = document.createTextNode(rowFilterTypeName);
+                                        cellFilterType.appendChild(filterTextNode);
                                     }
                                     
                                     //TODO: Document me.
@@ -266,7 +270,7 @@
                                     }
                                     
                                     //TODO: Document me.
-                                    function addRow<?php echo($index); ?>(rowName, rowType, rowTypeName)
+                                    function addRow<?php echo($index); ?>(rowName, rowType, rowTypeName, rowFilterType, rowFilterTypeName)
                                     {
                                         thisIndex = onIndex<?php echo($index); ?>;
                                         onIndex<?php echo($index); ?>++;
@@ -279,14 +283,14 @@
                                            }
                                         }
                                         
-                                        addRowToTable<?php echo($index); ?>(rowName, rowTypeName, thisIndex);
+                                        addRowToTable<?php echo($index); ?>(rowName, rowTypeName, rowFilterTypeName, thisIndex);
                                         
                                         if(<?php foreach($this->extraFieldTypes as $efi => $eft): ?><?php if($eft['hasOptions']): ?>rowType == <?php echo($efi); ?> || <?php endif; ?><?php endforeach; ?> false)
                                         {
                                             addOptionsAreaToTable<?php echo($index); ?>(thisIndex, rowName);
                                         }
                                         
-                                        appendCommandList('ADDFIELD <?php echo(urlencode($data['type'])); ?> '+encodeURI(rowType)+' '+encodeURI(rowName));
+                                        appendCommandList('ADDFIELD <?php echo(urlencode($data['type'])); ?> '+encodeURI(rowType)+' '+encodeURI(rowName)+' '+encodeURI(rowFilterType));
                                     }
                                     
                                     //TODO: Document me.
@@ -381,24 +385,65 @@
                                           appendCommandList('RENAMEROW <?php echo(urlencode($data['type'])); ?> '+encodeURI(rowNameOrg)+':'+encodeURI(rowNameNew));
 
                                           document.getElementById('editSettingsForm').submit();
-                                      }                                    
-                                    
+                                      }
+
+                                     function saveFilter<?php echo($index); ?>(rowIndex, rowName)
+                                     {
+                                         var checks = document.getElementsByClassName('editFilterCheck<?php echo($index); ?>_' + rowIndex);
+                                         var selected = [];
+                                         for (var i = 0; i < checks.length; i++)
+                                         {
+                                             if (checks[i].checked) selected.push(checks[i].value);
+                                         }
+                                         if (selected.length === 0) selected.push('default');
+
+                                         appendCommandList('CHANGEFILTER <?php echo(urlencode($data['type'])); ?> '+encodeURI(rowName)+':'+selected.join('|'));
+
+                                         document.getElementById('editSettingsForm').submit();
+                                     }
+
+                                     function editFilter<?php echo($index); ?>(rowIndex)
+                                     {
+                                         document.getElementById('filterDisplay<?php echo($index); ?>_' + rowIndex).style.display = 'none';
+                                         document.getElementById('filterEdit<?php echo($index); ?>_' + rowIndex).style.display = '';
+                                     }
+
                                     //TODO: Document me.
                                     function onAddField<?php echo($index); ?>()
                                     {
-                                       if(document.getElementById('addFieldName<?php echo($index); ?>').value == '')
-                                       {
-                                          return;
-                                       }
-                                       
-                                        addRow<?php echo($index); ?>(document.getElementById('addFieldName<?php echo($index); ?>').value, 
-                                                                     document.getElementById('addFieldSelect<?php echo($index); ?>').value, 
-                                                                     document.getElementById('addFieldSelect<?php echo($index); ?>').options[
-                                                                            document.getElementById('addFieldSelect<?php echo($index); ?>').selectedIndex
-                                                                        ].text
-                                                                    );
-                                                                    
-                                        onHideAddArea<?php echo($index); ?>();                             
+                                        if (document.getElementById('addFieldName<?php echo($index); ?>').value == '')
+                                        {
+                                            return;
+                                        }
+
+                                        var checks = document.getElementsByClassName('addFieldFilterCheck<?php echo($index); ?>');
+                                        var selected = [];
+                                        var selectedNames = [];
+                                        for (var i = 0; i < checks.length; i++)
+                                        {
+                                            if (checks[i].checked)
+                                            {
+                                                selected.push(checks[i].value);
+                                                selectedNames.push(checks[i].parentNode.textContent.trim());
+                                            }
+                                        }
+                                        if (selected.length === 0)
+                                        {
+                                            selected.push('default');
+                                            selectedNames.push('Default (Text)');
+                                        }
+
+                                        var typeSelect = document.getElementById('addFieldSelect<?php echo($index); ?>');
+
+                                        addRow<?php echo($index); ?>(
+                                            document.getElementById('addFieldName<?php echo($index); ?>').value,
+                                            typeSelect.value,
+                                            typeSelect.options[typeSelect.selectedIndex].text,
+                                            selected.join('|'),
+                                            selectedNames.join(', ')
+                                        );
+
+                                        onHideAddArea<?php echo($index); ?>();
                                     }
                                     
                                     //TODO: Document me.
@@ -449,6 +494,9 @@
                                             <th>
                                                 Field Type
                                             </th>
+                                            <th>
+                                                Filter Type
+                                            </th>
                                         </tr>
                                     </thead>
                                     <?php foreach($data['RS'] as $rsIndex => $rsData): ?>
@@ -472,6 +520,37 @@
                                             </td>
                                             <td>
                                                 <?php $this->_($this->extraFieldTypes[$rsData['extraFieldType']]['name']); ?>
+                                            </td>
+                                            <td class="text-nowrap">
+                                                <?php
+                                                    $filterKeys = array_filter(explode(',', (string) $rsData['filterType']));
+                                                    if (empty($filterKeys)) $filterKeys = array('default');
+                                                    $names = array();
+                                                    foreach ($filterKeys as $fk)
+                                                    {
+                                                        $names[] = isset($this->extraFieldFilters[$fk])
+                                                                ? $this->extraFieldFilters[$fk]['name']
+                                                                : $fk;
+                                                    }
+                                                ?>
+                                                <span id="filterDisplay<?php echo($index); ?>_<?php echo($rsIndex); ?>">
+                                                    <?php echo htmlspecialchars(implode(', ', $names)); ?>
+                                                    <a href="javascript:void(0);" onclick="editFilter<?php echo($index); ?>(<?php echo($rsIndex); ?>);" style="padding:0px;">
+                                                        <img src="images/edit.gif" style="padding:0px;" alt="Edit filter" />
+                                                    </a>
+                                                </span>
+                                                <span id="filterEdit<?php echo($index); ?>_<?php echo($rsIndex); ?>" style="display:none;">
+                                                    <?php foreach($this->extraFieldFilters as $filterKey => $filterData): ?>
+                                                        <label class="form-check form-check-inline mb-0">
+                                                            <input type="checkbox" class="form-check-input editFilterCheck<?php echo($index); ?>_<?php echo($rsIndex); ?>"
+                                                                value="<?php echo($filterKey); ?>"
+                                                                <?php echo(in_array($filterKey, $filterKeys) ? 'checked="checked"' : ''); ?> />
+                                                            <?php echo htmlspecialchars($filterData['name']); ?>
+                                                        </label>
+                                                    <?php endforeach; ?>
+                                                    <input type="button" class="btn btn-sm btn-primary" value="Save"
+                                                        onclick="saveFilter<?php echo($index); ?>(<?php echo($rsIndex); ?>, urlDecode('<?php echo(urlencode($rsData['fieldName'])); ?>'));" />
+                                                </span>
                                             </td>
                                         </tr>
                                     <?php endforeach; ?>
@@ -508,6 +587,21 @@
                                                     <option value="<?php echo($extraFieldTypeIndex); ?>"><?php $this->_($extraFieldTypeData['name']); ?></option>
                                                   <?php endforeach; ?>
                                                </select>
+                                            </td>
+                                            <td>
+                                                Filter:
+                                            </td>
+                                            <td>
+                                                <span id="addFieldFilter<?php echo($index); ?>">
+                                                <?php foreach($this->extraFieldFilters as $filterKey => $filterData): ?>
+                                                    <label class="form-check form-check-inline mb-0">
+                                                        <input type="checkbox" class="form-check-input addFieldFilterCheck<?php echo($index); ?>"
+                                                            value="<?php echo($filterKey); ?>"
+                                                            <?php echo($filterKey === 'default' ? 'checked="checked"' : ''); ?> />
+                                                        <?php echo htmlspecialchars($filterData['name']); ?>
+                                                    </label>
+                                                <?php endforeach; ?>
+                                                </span>
                                             </td>
                                         </tr>
                                     </table>                                    

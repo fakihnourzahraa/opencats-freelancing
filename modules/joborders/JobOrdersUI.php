@@ -31,7 +31,8 @@ include_once(LEGACY_ROOT . '/lib/Questionnaire.php');
 include_once(LEGACY_ROOT . '/lib/CommonErrors.php');
 include_once(LEGACY_ROOT . '/lib/JobOrderTypes.php');
 include_once(LEGACY_ROOT . '/lib/JobOrderStatuses.php');
-// include_once(LEGACY_ROOT . '/lib/Evaluations.php');
+include_once(LEGACY_ROOT . '/lib/Evaluations.php');
+include_once(LEGACY_ROOT . '/lib/EvaluationTemplate.php');
 include_once(LEGACY_ROOT . '/modules/joborders/dataGrids.php');
 
 class JobOrdersUI extends UserInterface
@@ -746,6 +747,11 @@ $dataGrid = new PipelineCandidatesDataGrid($dataGridProperties, $jobOrderID);
 $this->_template->assign('dataGrid', $dataGrid);
 $this->_template->assign('userID', $_SESSION['CATS']->getUserID());
 $this->_template->assign('savedPipelineFilter', $savedPipelineFilter);
+        $evalTemplate = new EvaluationTemplate();
+        $this->_template->assign(
+            'evaluationStages',
+            $evalTemplate->getFullTemplate((int) $jobOrderID)
+        );
 $this->_template->display('./modules/joborders/Show.tpl');
 }
 
